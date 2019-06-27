@@ -6,6 +6,7 @@ package im.delight.android.webview;
  * Licensed under the MIT License (https://opensource.org/licenses/MIT)
  */
 
+import android.content.ActivityNotFoundException;
 import android.view.ViewGroup;
 import android.app.DownloadManager;
 import android.app.DownloadManager.Request;
@@ -502,8 +503,7 @@ public class AdvancedWebView extends WebView {
 
 			@Override
 			public boolean shouldOverrideUrlLoading(final WebView view, final String url) {
-				// if the hostname may not be accessed
-				if (!isHostnameAllowed(url)) {
+				if (!isPermittedUrl(url)) {
 					// if a listener is available
 					if (mListener != null) {
 						// inform the listener about the request
@@ -518,6 +518,47 @@ public class AdvancedWebView extends WebView {
 				if (mCustomWebViewClient != null) {
 					// if the user-specified handler asks to override the request
 					if (mCustomWebViewClient.shouldOverrideUrlLoading(view, url)) {
+						// cancel the original request
+						return true;
+					}
+				}
+
+				final Uri uri = Uri.parse(url);
+				final String scheme = uri.getScheme();
+
+				if (scheme != null) {
+					final Intent externalSchemeIntent;
+
+					if (scheme.equals("tel")) {
+						externalSchemeIntent = new Intent(Intent.ACTION_DIAL, uri);
+					}
+					else if (scheme.equals("sms")) {
+						externalSchemeIntent = new Intent(Intent.ACTION_SENDTO, uri);
+					}
+					else if (scheme.equals("mailto")) {
+						externalSchemeIntent = new Intent(Intent.ACTION_SENDTO, uri);
+					}
+					else if (scheme.equals("whatsapp")) {
+						externalSchemeIntent = new Intent(Intent.ACTION_SENDTO, uri);
+						externalSchemeIntent.setPackage("com.whatsapp");
+					}
+					else {
+						externalSchemeIntent = null;
+					}
+
+					if (externalSchemeIntent != null) {
+						externalSchemeIntent.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK);
+
+						try {
+							if (mActivity != null && mActivity.get() != null) {
+								mActivity.get().startActivity(externalSchemeIntent);
+							}
+							else {
+								getContext().startActivity(externalSchemeIntent);
+							}
+						}
+						catch (ActivityNotFoundException ignored) {}
+
 						// cancel the original request
 						return true;
 					}
@@ -1066,20 +1107,42 @@ public class AdvancedWebView extends WebView {
 		return unique.toString();
 	}
 
-	protected boolean isHostnameAllowed(final String url) {
+	public boolean isPermittedUrl(final String url) {
 		// if the permitted hostnames have not been restricted to a specific set
 		if (mPermittedHostnames.size() == 0) {
 			// all hostnames are allowed
 			return true;
 		}
 
-		// get the actual hostname of the URL that is to be checked
-		final String actualHost = Uri.parse(url).getHost();
+		final Uri parsedUrl = Uri.parse(url);
+
+		// get the hostname of the URL that is to be checked
+		final String actualHost = parsedUrl.getHost();
+
+		// if the hostname could not be determined, usually because the URL has been invalid
+		if (actualHost == null) {
+			return false;
+		}
+
+		// if the host contains invalid characters (e.g. a backslash)
+		if (!actualHost.matches("^[a-zA-Z0-9._!~*')(;:&=+$,%\\[\\]-]*$")) {
+			// prevent mismatches between interpretations by `Uri` and `WebView`, e.g. for `http://evil.example.com\.good.example.com/`
+			return false;
+		}
+
+		// get the user information from the authority part of the URL that is to be checked
+		final String actualUserInformation = parsedUrl.getUserInfo();
+
+		// if the user information contains invalid characters (e.g. a backslash)
+		if (actualUserInformation != null && !actualUserInformation.matches("^[a-zA-Z0-9._!~*')(;:&=+$,%-]*$")) {
+			// prevent mismatches between interpretations by `Uri` and `WebView`, e.g. for `http://evil.example.com\@good.example.com/`
+			return false;
+		}
 
 		// for every hostname in the set of permitted hosts
 		for (String expectedHost : mPermittedHostnames) {
 			// if the two hostnames match or if the actual host is a subdomain of the expected host
-			if (actualHost.equals(expectedHost) || actualHost.endsWith("."+expectedHost)) {
+			if (actualHost.equals(expectedHost) || actualHost.endsWith("." + expectedHost)) {
 				// the actual hostname of the URL to be checked is allowed
 				return true;
 			}
@@ -1087,6 +1150,13 @@ public class AdvancedWebView extends WebView {
 
 		// the actual hostname of the URL to be checked is not allowed since there were no matches
 		return false;
+	}
+
+	/**
+	 * @deprecated use `isPermittedUrl` instead
+	 */
+	protected boolean isHostnameAllowed(final String url) {
+		return isPermittedUrl(url);
 	}
 
 	protected void setLastError() {
